@@ -8,24 +8,24 @@ import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import com.example.flutter_web_rtc.models.IceCandidateModel
 import com.example.flutter_web_rtc.models.MessageModel
-import com.example.flutter_web_rtc.utils.DataConverter
-import com.example.flutter_web_rtc.utils.FileMetaDataType
+
 import com.example.flutter_web_rtc.utils.NewMessageInterface
 import com.example.flutter_web_rtc.utils.PeerConnectionObserver
 
 import com.example.flutter_web_rtc.utils.RTCAudioManager
-import com.example.flutter_web_rtc.utils.ReceiverListner
 import com.google.gson.Gson
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
 import org.webrtc.DataChannel
+import org.webrtc.EglBase
 import org.webrtc.IceCandidate
 import org.webrtc.MediaStream
 import org.webrtc.SessionDescription
+import org.webrtc.SurfaceViewRenderer
 
 
-class MainActivity: FlutterActivity() , NewMessageInterface ,ReceiverListner{
+class MainActivity: FlutterActivity() , NewMessageInterface {
     private var granted = false
     private val CHANNEL = "SendToAndroid"
     private var PERMISSIONS_REQUEST_CODE = 1
@@ -41,7 +41,9 @@ class MainActivity: FlutterActivity() , NewMessageInterface ,ReceiverListner{
     private var isSpeakerMode = true
     private var CallerName:String = ""
     private var dataChannel : DataChannel? = null
-
+    private var localView: SurfaceViewRenderer? = null
+    private var remoteView: SurfaceViewRenderer? = null
+    private val eglBase = EglBase.create()
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, CHANNEL)
@@ -82,7 +84,7 @@ class MainActivity: FlutterActivity() , NewMessageInterface ,ReceiverListner{
                     Log.d("check p2p ","channel working..")
 
                     rtcClient?.checkConnectionStatus()
-                sendTextToDataChannel("hello")
+                    rtcClient?.sendMessage("Hello")
 
             }
             else -> result.error("UNAVAILABLE", "Action not supported", null)
@@ -146,14 +148,31 @@ class MainActivity: FlutterActivity() , NewMessageInterface ,ReceiverListner{
             }
             override fun onAddStream(p0: MediaStream?) {
                 super.onAddStream(p0)
+//                p0?.videoTracks?.get(0)?.addSink(binding.remoteView)
                 Log.d(TAG, "onAddStream: $p0")
 
             }
 
             override fun onDataChannel(p0: DataChannel?) {
                 super.onDataChannel(p0)
-                dataChannel = p0
+                dataChannel =  p0
+                Log.d("DataChannel", p0.toString())
+                dataChannel?.registerObserver(object : DataChannel.Observer {
+                    override fun onBufferedAmountChange(p0: Long) {
+
+                    }
+
+                    override fun onStateChange() {
+
+                    }
+
+                    override fun onMessage(buffer: DataChannel.Buffer?) {
+//                        val message = String(buffer?.data?.array() ?: ByteArray(0))
+                        Log.d(TAG, "Message received on DataChannel: $buffer")
+                    }
+                })
             }
+
         })
         rtcAudioManager.setDefaultAudioDevice(RTCAudioManager.AudioDevice.SPEAKER_PHONE)
 
@@ -176,7 +195,7 @@ class MainActivity: FlutterActivity() , NewMessageInterface ,ReceiverListner{
                     Log.d(TAG, "user is not reachable");
 
                 } else {
-                    rtcClient?.call(target)
+                        rtcClient?.call(target)
 
                 }
             }
@@ -215,23 +234,6 @@ class MainActivity: FlutterActivity() , NewMessageInterface ,ReceiverListner{
 
         }
 
-
-    private fun sendTextToDataChannel(text:String){
-        sendBufferToDataChannel(DataConverter.convertToBuffer(FileMetaDataType.META_DATA_TEXT,text))
-        sendBufferToDataChannel(DataConverter.convertToBuffer(FileMetaDataType.TEXT,text))
-    }
-
-    private fun sendBufferToDataChannel(buffer: DataChannel.Buffer){
-        dataChannel?.send(buffer)
-
-    }
-
-    override fun onDataRecived(it: DataChannel.Buffer) {
-            val data = ByteArray(it.data.remaining())
-            it.data.get(data)
-            val textDataString = String(data,Charsets.UTF_8)
-            Log.d("data_Received", textDataString)
-    }
 
 
 }

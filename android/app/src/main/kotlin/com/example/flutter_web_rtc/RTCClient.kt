@@ -3,39 +3,24 @@ package com.example.flutter_web_rtc
 import android.app.Application
 import android.util.Log
 import com.example.flutter_web_rtc.models.MessageModel
-import com.example.flutter_web_rtc.utils.ReceiverListner
-import org.webrtc.AudioTrack
-import org.webrtc.CameraVideoCapturer
-import org.webrtc.DataChannel
-import org.webrtc.DefaultVideoDecoderFactory
-import org.webrtc.DefaultVideoEncoderFactory
-import org.webrtc.EglBase
-import org.webrtc.IceCandidate
-import org.webrtc.MediaConstraints
-import org.webrtc.PeerConnection
-import org.webrtc.PeerConnection.IceConnectionState
-import org.webrtc.PeerConnection.SignalingState
-import org.webrtc.PeerConnectionFactory
-import org.webrtc.SdpObserver
-import org.webrtc.SessionDescription
-import org.webrtc.VideoTrack
 
+import org.webrtc.*
+import java.nio.ByteBuffer
 
 class RTCClient(
     private val application: Application,
     private val username: String,
     private val socketRepository: SocketRepository,
     private val observer: PeerConnection.Observer
-
 ) {
 
     init {
         initPeerConnectionFactory(application)
-
     }
 
     private val eglContext = EglBase.create()
     private val peerConnectionFactory by lazy { createPeerConnectionFactory() }
+
     private val iceServer = listOf(
         PeerConnection.IceServer.builder("stun:iphone-stun.strato-iphone.de:3478").createIceServer(),
         PeerConnection.IceServer("stun:openrelay.metered.ca:80"),
@@ -44,37 +29,13 @@ class RTCClient(
         PeerConnection.IceServer("turn:openrelay.metered.ca:443?transport=tcp","openrelayproject","openrelayproject"),
 
         )
-
     private val peerConnection by lazy { createPeerConnection(observer) }
-
-    var reciverListener : ReceiverListner? = null
     private val localVideoSource by lazy { peerConnectionFactory.createVideoSource(false) }
     private val localAudioSource by lazy { peerConnectionFactory.createAudioSource(MediaConstraints()) }
     private var videoCapturer: CameraVideoCapturer? = null
     private var localAudioTrack: AudioTrack? = null
     private var localVideoTrack: VideoTrack? = null
-
-    private val dataChannelObserver = object : DataChannel.Observer{
-        override fun onBufferedAmountChange(p0: Long) {
-            TODO("Not yet implemented")
-        }
-
-        override fun onStateChange() {
-            val state =
-                peerConnection!!.createDataChannel("dataChannelLabel", DataChannel.Init()).state()
-            when (state) {
-                DataChannel.State.CONNECTING -> Log.d("Data_Channel", "State: Connecting")
-                DataChannel.State.OPEN -> Log.d("Data_Channel", "State: Open")
-                DataChannel.State.CLOSING -> Log.d("Data_Channel", "State: Closing")
-                DataChannel.State.CLOSED -> Log.d("Data_Channel", "State: Closed")
-            }
-        }
-
-        override fun onMessage(p0: DataChannel.Buffer?) {
-            p0?.let { reciverListener?.onDataRecived(it) }
-        }
-
-    }
+    private var dataChannel : DataChannel? = null
 
     private fun initPeerConnectionFactory(application: Application) {
         val peerConnectionOption = PeerConnectionFactory.InitializationOptions.builder(application)
@@ -96,46 +57,90 @@ class RTCClient(
             )
             .setVideoDecoderFactory(DefaultVideoDecoderFactory(eglContext.eglBaseContext))
             .setOptions(PeerConnectionFactory.Options().apply {
-                disableEncryption = true
+//                disableEncryption = true
                 disableNetworkMonitor = true
             }).createPeerConnectionFactory()
     }
 
+    private fun createDataChannel(): DataChannel? {
+        val init = DataChannel.Init()
+        return peerConnection?.createDataChannel("dataChannel", init)
+    }
+//    private fun createPeerConnection(observer: PeerConnection.Observer): PeerConnection? {
+//        return peerConnectionFactory.createPeerConnection(iceServer, observer)
+//    }
+
     private fun createPeerConnection(observer: PeerConnection.Observer): PeerConnection? {
-        return peerConnectionFactory.createPeerConnection(iceServer, observer)
+        val pc = peerConnectionFactory.createPeerConnection(iceServer, observer)
+
+        pc?.let {
+            // Set the DataChannel observer
+            val init = DataChannel.Init()
+            dataChannel = it.createDataChannel("dataChannel",init )
+            dataChannel?.registerObserver(object : DataChannel.Observer {
+                override fun onBufferedAmountChange(previousAmount: Long) {}
+
+                override fun onStateChange() {
+                    Log.d("DataChannel", "State: ${dataChannel?.state()}")
+                }
+
+                override fun onMessage(buffer: DataChannel.Buffer?) {
+
+//                    val message = String(buffer?.data?.array() ?: ByteArray(0))
+                    Log.d("DataChannel", "Message received on DataChannel: $buffer")
+                    // Handle received message
+                }
+            })
+        }
+
+        return pc
     }
 
-    private fun createDataChannel() {
-        Log.d("RTCClient", "Creating data channel")
 
-        // Initialize the data channel
-        val initDataChannel = DataChannel.Init()
-        Log.d("RTCClient", "DataChannel.Init() created")
-
-        // Create the data channel
-        val dataChannel = peerConnection?.createDataChannel("dataChannelLabel", initDataChannel)
-
-        if (dataChannel != null) {
-            Log.d("RTCClient", "Data channel created successfully: ${dataChannel.label()}")
-            dataChannel.registerObserver(dataChannelObserver)
-            Log.d("RTCClient", "Data channel observer registered")
-        } else {
-            Log.e("RTCClient", "Failed to create data channel: DataChannel is null")
+    fun initializeSurfaceView(surface: SurfaceViewRenderer) {
+        surface.run {
+            setEnableHardwareScaler(true)
+            setMirror(true)
+            init(eglContext.eglBaseContext, null)
         }
     }
 
+    fun startLocalVideo(surface: SurfaceViewRenderer) {
+        val surfaceTextureHelper =
+            SurfaceTextureHelper.create(Thread.currentThread().name, eglContext.eglBaseContext)
+        videoCapturer = getVideoCapturer(application)
+        videoCapturer?.initialize(
+            surfaceTextureHelper,
+            surface.context, localVideoSource.capturerObserver
+        )
+        videoCapturer?.startCapture(320, 240, 30)
+        localVideoTrack = peerConnectionFactory.createVideoTrack("local_track", localVideoSource)
+        localVideoTrack?.addSink(surface)
+        localAudioTrack =
+            peerConnectionFactory.createAudioTrack("local_track_audio", localAudioSource)
+        val localStream = peerConnectionFactory.createLocalMediaStream("local_stream")
+        localStream.addTrack(localAudioTrack)
+        localStream.addTrack(localVideoTrack)
 
+        peerConnection?.addStream(localStream)
 
+    }
+
+    private fun getVideoCapturer(application: Application): CameraVideoCapturer {
+        return Camera2Enumerator(application).run {
+            deviceNames.find {
+                isFrontFacing(it)
+            }?.let {
+                createCapturer(it, null)
+            } ?: throw
+            IllegalStateException()
+        }
+    }
 
     fun call(target: String) {
-        if (peerConnection == null) {
-            Log.e("RTCClient", "PeerConnection is not initialized.")
-            return
-        }
-        createDataChannel()
         val mediaConstraints = MediaConstraints()
         mediaConstraints.mandatory.add(MediaConstraints.KeyValuePair("OfferToReceiveVideo", "true"))
-        mediaConstraints.mandatory.add(MediaConstraints.KeyValuePair("RtpDataChannel","true"))
+
 
         peerConnection?.createOffer(object : SdpObserver {
             override fun onCreateSuccess(desc: SessionDescription?) {
@@ -155,7 +160,6 @@ class RTCClient(
                                 "create_offer", username, target, offer
                             )
                         )
-
                     }
 
                     override fun onCreateFailure(p0: String?) {
@@ -163,7 +167,6 @@ class RTCClient(
 
                     override fun onSetFailure(p0: String?) {
                     }
-
 
                 }, desc)
 
@@ -202,7 +205,6 @@ class RTCClient(
     fun answer(target: String) {
         val constraints = MediaConstraints()
         constraints.mandatory.add(MediaConstraints.KeyValuePair("OfferToReceiveVideo", "true"))
-        constraints.mandatory.add(MediaConstraints.KeyValuePair("RtpDataChannel","true"))
 
         peerConnection?.createAnswer(object : SdpObserver {
             override fun onCreateSuccess(desc: SessionDescription?) {
@@ -221,7 +223,6 @@ class RTCClient(
                                 "create_answer", username, target, answer
                             )
                         )
-
                     }
 
                     override fun onCreateFailure(p0: String?) {
@@ -243,14 +244,27 @@ class RTCClient(
             }
 
         }, constraints)
-
     }
 
     fun addIceCandidate(p0: IceCandidate?) {
         peerConnection?.addIceCandidate(p0)
     }
 
+    fun switchCamera() {
+        videoCapturer?.switchCamera(null)
+    }
 
+    fun toggleAudio(mute: Boolean) {
+        localAudioTrack?.setEnabled(mute)
+    }
+
+    fun toggleCamera(cameraPause: Boolean) {
+        localVideoTrack?.setEnabled(cameraPause)
+    }
+
+    fun endCall() {
+        peerConnection?.close()
+    }
 
     fun checkConnectionStatus(){
         if (peerConnection == null) {
@@ -258,14 +272,23 @@ class RTCClient(
             return;
         }
         // Check signaling state
-        val signalingState: SignalingState = peerConnection!!.signalingState()
+        val signalingState: PeerConnection.SignalingState = peerConnection!!.signalingState()
         Log.d("PeerConnection", "Signaling state: $signalingState")
 
         // Check ICE connection state
-        val iceConnectionState: IceConnectionState = peerConnection!!.iceConnectionState()
+        val iceConnectionState: PeerConnection.IceConnectionState = peerConnection!!.iceConnectionState()
         Log.d("PeerConnection", "ICE connection state: $iceConnectionState")
 
     }
 
-
+    fun sendMessage(message: String) {
+        val buffer = ByteBuffer.wrap(message.toByteArray())
+        val dataBuffer = DataChannel.Buffer(buffer, false)
+        if (dataChannel?.state() == DataChannel.State.OPEN) {
+            dataChannel?.send(dataBuffer)
+            Log.d("DataChannel", "Message sent: $message")
+        } else {
+            Log.e("DataChannel", "DataChannel is not open")
+        }
+    }
 }
